@@ -30,12 +30,13 @@ export default function LiveChatWidget() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const socketRef = useRef<Socket | null>(null);
 
-  // Scroll to bottom when messages change
+  // Get WebSocket URL from environment variable
+  const WEBSOCKET_URL = process.env.NEXT_PUBLIC_WEBSOCKET_URL || "http://localhost:3001";
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Restore session from localStorage
   // @ts-ignore
   useEffect(() => {
     const storedSessionId = localStorage.getItem("chatSessionId");
@@ -50,29 +51,36 @@ export default function LiveChatWidget() {
   const initSocket = (sid: string) => {
     socketRef.current?.disconnect();
 
-    const socket = io(
-      process.env.NODE_ENV === "production"
-        ? ""
-        : "http://localhost:3000",
-      { path: "/api/chat/socket" }
-    );
+    const socket = io(WEBSOCKET_URL, {
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+    });
 
     socketRef.current = socket;
 
     socket.on("connect", () => {
       setIsConnected(true);
       socket.emit("join-chat", sid);
+      console.log("Connected to WebSocket server");
     });
 
-    socket.on("disconnect", () => setIsConnected(false));
+    socket.on("disconnect", () => {
+      setIsConnected(false);
+      console.log("Disconnected from WebSocket server");
+    });
 
     socket.on("chat-history", (chatMessages: Message[]) =>
       setMessages(chatMessages)
     );
 
-    socket.on("new-message", (newMessage: Message) =>
-      setMessages((prev) => [...prev, newMessage])
-    );
+    socket.on("new-message", (newMessage: Message) => {
+      // Only add admin messages (user messages are already added optimistically)
+      if (newMessage.sender === "admin") {
+        setMessages((prev) => [...prev, newMessage]);
+      }
+    });
 
     socket.on("error", (err: { message: string }) => {
       toast.error(err.message || "Connection error");
@@ -129,20 +137,8 @@ export default function LiveChatWidget() {
 
   return (
     <>
-      {!isOpen && (
-        <Button
-          aria-label="Open chat"
-          onClick={() => setIsOpen(true)}
-          className="fixed bottom-10 right-6 h-14 w-14 rounded-full shadow-lg z-50 bg-primary text-white"
-          size="icon"
-        >
-          <MessageCircle className="h-6 w-6" />
-        </Button>
-      )}
-
       {isOpen && (
         <Card className="fixed bottom-6 right-6 w-96 h-[500px] shadow-2xl z-50 flex flex-col bg-white">
-          {/* Header */}
           <div className="bg-primary text-white p-4 rounded-t-lg flex items-center justify-between">
             <div className="flex items-center gap-2">
               <MessageCircle className="h-5 w-5" />
@@ -169,7 +165,6 @@ export default function LiveChatWidget() {
             </Button>
           </div>
 
-          {/* Body */}
           {!isStarted ? (
             <div className="flex-1 p-6 flex flex-col justify-center">
               <h4 className="font-semibold text-lg mb-2">Start a conversation</h4>
@@ -224,7 +219,6 @@ export default function LiveChatWidget() {
                 <div ref={messagesEndRef} />
               </div>
 
-              {/* Input */}
               <div className="p-4 border-t border-gray-200">
                 <div className="flex gap-2">
                   <Input
@@ -232,13 +226,13 @@ export default function LiveChatWidget() {
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && sendMessage()}
-                    disabled={isSending}
+                    disabled={isSending || !isConnected}
                   />
                   <Button
                     aria-label="Send message"
                     onClick={sendMessage}
                     size="icon"
-                    disabled={isSending}
+                    disabled={isSending || !isConnected}
                   >
                     <Send className="h-4 w-4" />
                   </Button>

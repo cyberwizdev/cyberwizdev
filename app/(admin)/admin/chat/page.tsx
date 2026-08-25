@@ -18,6 +18,7 @@ interface ChatSession {
   lastMessage: string | null;
   createdAt: string;
   updatedAt: string;
+  unread?: boolean;
 }
 
 interface Message {
@@ -26,6 +27,7 @@ interface Message {
   sender: string;
   senderName: string | null;
   createdAt: string;
+  sessionId?: string;
 }
 
 export default function AdminChatPage() {
@@ -33,15 +35,25 @@ export default function AdminChatPage() {
   const [selectedSession, setSelectedSession] = useState<ChatSession | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
-  const [adminName, setAdminName] = useState("Admin");
+  const [adminName] = useState("Admin");
   const [isConnected, setIsConnected] = useState(false);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const socketRef = useRef<Socket | null>(null);
+  const selectedSessionRef = useRef<ChatSession | null>(null); // 👈 track selected session safely
+
+  const WEBSOCKET_URL =
+    process.env.NEXT_PUBLIC_WEBSOCKET_URL || "http://localhost:3001";
+
+  // keep ref in sync with state
+  useEffect(() => {
+    selectedSessionRef.current = selectedSession;
+  }, [selectedSession]);
 
   useEffect(() => {
     initializeSocket();
     fetchSessions();
-    
+
     return () => {
       if (socketRef.current) {
         socketRef.current.disconnect();
@@ -51,9 +63,14 @@ export default function AdminChatPage() {
 
   useEffect(() => {
     if (selectedSession && socketRef.current) {
-      // Join the selected chat session
       socketRef.current.emit("join-chat", selectedSession.id);
       fetchMessages(selectedSession.id);
+
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === selectedSession.id ? { ...s, unread: false } : s
+        )
+      );
     }
   }, [selectedSession]);
 
@@ -62,42 +79,36 @@ export default function AdminChatPage() {
   }, [messages]);
 
   const initializeSocket = () => {
-    if (socketRef.current) {
-      socketRef.current.disconnect();
-    }
+    if (socketRef.current) socketRef.current.disconnect();
 
-    // Initialize socket connection
-    socketRef.current = io(process.env.NODE_ENV === "production" ? "" : "http://localhost:3000", {
-      path: "/api/chat/socket",
+    socketRef.current = io(WEBSOCKET_URL, {
+      transports: ["websocket", "polling"],
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
     });
 
     const socket = socketRef.current;
 
     socket.on("connect", () => {
-      console.log("Admin connected to WebSocket server");
       setIsConnected(true);
-      // Admin joins a general admin room
       socket.emit("join-admin");
     });
 
     socket.on("disconnect", () => {
-      console.log("Admin disconnected from WebSocket server");
       setIsConnected(false);
     });
 
     socket.on("new-session", (session: ChatSession) => {
       setSessions((prev) => {
-        const exists = prev.find(s => s.id === session.id);
-        if (!exists) {
-          return [session, ...prev];
-        }
-        return prev;
+        if (prev.find((s) => s.id === session.id)) return prev;
+        return [session, ...prev];
       });
     });
 
     socket.on("session-updated", (session: ChatSession) => {
-      setSessions((prev) => 
-        prev.map(s => s.id === session.id ? session : s)
+      setSessions((prev) =>
+        prev.map((s) => (s.id === session.id ? session : s))
       );
     });
 
@@ -106,21 +117,32 @@ export default function AdminChatPage() {
     });
 
     socket.on("new-message", (newMessage: Message) => {
-      if (selectedSession && newMessage.sender === "user") {
+      const current = selectedSessionRef.current;
+
+      // if this is the active session, append to chat box
+      if (current?.id === newMessage.sessionId) {
         setMessages((prev) => [...prev, newMessage]);
       }
-      // Update session last message
-      setSessions((prev) => 
-        prev.map(s => 
-          s.id === selectedSession?.id 
-            ? { ...s, lastMessage: newMessage.message, updatedAt: newMessage.createdAt }
+
+      // update sessions list (lastMessage + unread + reorder)
+      setSessions((prev) => {
+        const updated = prev.map((s) =>
+          s.id === newMessage.sessionId
+            ? {
+                ...s,
+                lastMessage: newMessage.message,
+                updatedAt: newMessage.createdAt,
+                unread: current?.id !== newMessage.sessionId,
+              }
             : s
-        )
-      );
+        );
+        const target = updated.find((s) => s.id === newMessage.sessionId);
+        if (!target) return updated;
+        return [target, ...updated.filter((s) => s.id !== newMessage.sessionId)];
+      });
     });
 
     socket.on("error", (error: { message: string }) => {
-      console.error("WebSocket error:", error);
       toast.error(error.message || "Connection error");
     });
   };
@@ -134,7 +156,7 @@ export default function AdminChatPage() {
       const res = await fetch("/api/admin/chat/sessions");
       const data = await res.json();
       setSessions(data.sessions || []);
-    } catch (error) {
+    } catch {
       console.error("Failed to fetch sessions");
     }
   };
@@ -144,34 +166,31 @@ export default function AdminChatPage() {
       const res = await fetch(`/api/admin/chat/messages?sessionId=${sessionId}`);
       const data = await res.json();
       setMessages(data.messages || []);
-    } catch (error) {
+    } catch {
       console.error("Failed to fetch messages");
     }
   };
 
-  const sendMessage = async () => {
-    if (!input.trim() || !selectedSession || !socketRef.current || !isConnected) return;
+  const sendMessage = () => {
+    if (!input.trim() || !selectedSession || !socketRef.current || !isConnected)
+      return;
 
-    const tempMessage = {
+    const tempMessage: Message = {
       id: Date.now().toString(),
       message: input,
       sender: "admin",
       senderName: adminName,
       createdAt: new Date().toISOString(),
+      sessionId: selectedSession.id,
     };
-    setMessages((prev) => [...prev, tempMessage]);
+    // setMessages((prev) => [...prev, tempMessage]);
     setInput("");
 
-    try {
-      // Send message via WebSocket
-      socketRef.current.emit("admin-message", {
-        sessionId: selectedSession.id,
-        message: input,
-        senderName: adminName,
-      });
-    } catch (error) {
-      toast.error("Failed to send message");
-    }
+    socketRef.current.emit("admin-message", {
+      sessionId: selectedSession.id,
+      message: tempMessage.message,
+      senderName: adminName,
+    });
   };
 
   const closeSession = async (sessionId: string) => {
@@ -186,21 +205,32 @@ export default function AdminChatPage() {
       if (selectedSession?.id === sessionId) {
         setSelectedSession(null);
       }
-    } catch (error) {
+    } catch {
       toast.error("Failed to close session");
     }
   };
 
   return (
     <div className="space-y-6">
+      {/* header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold">Live Chat</h1>
           <p className="text-gray-500 dark:text-gray-400 mt-2 flex items-center gap-2">
             Chat with website visitors in real-time
-            <span className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full ${isConnected ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'}`}>
-              <span className={`inline-block w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`}></span>
-              {isConnected ? 'Connected' : 'Disconnected'}
+            <span
+              className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full ${
+                isConnected
+                  ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
+                  : "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200"
+              }`}
+            >
+              <span
+                className={`inline-block w-2 h-2 rounded-full ${
+                  isConnected ? "bg-green-500" : "bg-red-500"
+                }`}
+              ></span>
+              {isConnected ? "Connected" : "Disconnected"}
             </span>
           </p>
         </div>
@@ -210,10 +240,14 @@ export default function AdminChatPage() {
         </Button>
       </div>
 
+      {/* layout */}
       <div className="grid lg:grid-cols-3 gap-6 h-[600px]">
+        {/* Sessions list */}
         <Card className="lg:col-span-1 overflow-hidden flex flex-col">
           <CardHeader>
-            <CardTitle className="text-lg">Active Chats ({sessions.filter(s => s.status === 'active').length})</CardTitle>
+            <CardTitle className="text-lg">
+              Active Chats ({sessions.filter((s) => s.status === "active").length})
+            </CardTitle>
           </CardHeader>
           <CardContent className="flex-1 overflow-y-auto p-0">
             <div className="divide-y divide-gray-200 dark:divide-gray-700">
@@ -227,22 +261,33 @@ export default function AdminChatPage() {
                     key={session.id}
                     onClick={() => setSelectedSession(session)}
                     className={`p-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors ${
-                      selectedSession?.id === session.id ? "bg-gray-100 dark:bg-gray-800" : ""
+                      selectedSession?.id === session.id
+                        ? "bg-gray-100 dark:bg-gray-800"
+                        : ""
                     }`}
                   >
                     <div className="flex items-start justify-between">
                       <div className="flex-1 min-w-0">
-                        <p className="font-semibold truncate">
+                        <p className="font-semibold truncate flex items-center gap-2">
                           {session.userName || "Anonymous"}
+                          {session.unread && (
+                            <span className="w-2 h-2 rounded-full bg-blue-500"></span>
+                          )}
                         </p>
                         {session.userEmail && (
-                          <p className="text-xs text-gray-500 truncate">{session.userEmail}</p>
+                          <p className="text-xs text-gray-500 truncate">
+                            {session.userEmail}
+                          </p>
                         )}
                         <p className="text-sm text-gray-600 dark:text-gray-400 truncate mt-1">
                           {session.lastMessage || "No messages yet"}
                         </p>
                       </div>
-                      <Badge variant={session.status === "active" ? "default" : "secondary"}>
+                      <Badge
+                        variant={
+                          session.status === "active" ? "default" : "secondary"
+                        }
+                      >
                         {session.status}
                       </Badge>
                     </div>
@@ -256,6 +301,7 @@ export default function AdminChatPage() {
           </CardContent>
         </Card>
 
+        {/* Chat window */}
         <Card className="lg:col-span-2 overflow-hidden flex flex-col">
           {selectedSession ? (
             <>
@@ -266,7 +312,9 @@ export default function AdminChatPage() {
                       {selectedSession.userName || "Anonymous User"}
                     </CardTitle>
                     {selectedSession.userEmail && (
-                      <p className="text-sm text-gray-500">{selectedSession.userEmail}</p>
+                      <p className="text-sm text-gray-500">
+                        {selectedSession.userEmail}
+                      </p>
                     )}
                   </div>
                   <Button
@@ -283,7 +331,9 @@ export default function AdminChatPage() {
                 {messages.map((msg) => (
                   <div
                     key={msg.id}
-                    className={`flex ${msg.sender === "admin" ? "justify-end" : "justify-start"}`}
+                    className={`flex ${
+                      msg.sender === "admin" ? "justify-end" : "justify-start"
+                    }`}
                   >
                     <div
                       className={`max-w-[75%] rounded-lg px-4 py-2 ${
@@ -293,9 +343,13 @@ export default function AdminChatPage() {
                       }`}
                     >
                       {msg.senderName && (
-                        <p className="text-xs font-semibold mb-1">{msg.senderName}</p>
+                        <p className="text-xs font-semibold mb-1">
+                          {msg.senderName}
+                        </p>
                       )}
-                      <p className="text-sm whitespace-pre-wrap">{msg.message}</p>
+                      <p className="text-sm whitespace-pre-wrap">
+                        {msg.message}
+                      </p>
                       <p className="text-xs opacity-70 mt-1">
                         {new Date(msg.createdAt).toLocaleTimeString([], {
                           hour: "2-digit",
@@ -315,8 +369,13 @@ export default function AdminChatPage() {
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && sendMessage()}
+                    disabled={!isConnected}
                   />
-                  <Button onClick={sendMessage} size="icon">
+                  <Button
+                    onClick={sendMessage}
+                    size="icon"
+                    disabled={!isConnected}
+                  >
                     <Send className="h-4 w-4" />
                   </Button>
                 </div>

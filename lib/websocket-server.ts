@@ -91,8 +91,9 @@ export class WebSocketChatServer {
             },
           });
 
-          // Broadcast message to all clients in the session room
-          this.io.to(`chat:${sessionId}`).emit("new-message", newMessage);
+          // Broadcast message to OTHER clients in the session room (not sender)
+          // User already has optimistic update, so we only send to admins
+          socket.to(`chat:${sessionId}`).emit("new-message", newMessage);
           
           // Notify admins about the new message
           const session = await prisma.chatSession.findUnique({
@@ -140,10 +141,11 @@ export class WebSocketChatServer {
             },
           });
 
-          // Broadcast message to all clients in the session room
-          this.io.to(`chat:${sessionId}`).emit("new-message", newMessage);
+          // Broadcast message to OTHER clients in the session room (not admin sender)
+          // Admin already has optimistic update
+          socket.to(`chat:${sessionId}`).emit("new-message", newMessage);
           
-          // Notify admins about the updated session
+          // Notify other admins about the updated session
           const session = await prisma.chatSession.findUnique({
             where: { id: sessionId },
           });
