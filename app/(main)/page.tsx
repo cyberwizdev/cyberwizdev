@@ -3,7 +3,7 @@ import { TestimonialSection } from "@/components/testimonial";
 import { HeroSection } from "@/components/hero";
 import { TechnologyStack } from "@/components/stack";
 import { ServicesSection } from "@/components/services";
-import { CaseStudiesSection } from "@/components/case-studies";
+import { ProjectsSection } from "@/components/projects-section";
 import { WhyChooseUsSection } from "@/components/why-choose-us";
 import { CTASection } from "@/components/cta";
 
@@ -103,6 +103,8 @@ export default function Home() {
       <TechnologyStack technologies={technologies} />
 
       <ServicesSection />
+
+      <ProjectsSection />
 
       <CaseStudiesSection caseStudies={caseStudies} />
 

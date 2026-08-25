@@ -9,7 +9,10 @@ import {
   MessageSquare, 
   Send, 
   Users,
-  LogOut 
+  LogOut,
+  Folder,
+  FolderOpen,
+  Star 
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { signOut } from "next-auth/react";
@@ -21,6 +24,7 @@ const navigation = [
   { name: "Subscribers", href: "/admin/subscribers", icon: Users },
   { name: "Contact Forms", href: "/admin/contacts", icon: Mail },
   { name: "Live Chat", href: "/admin/chat", icon: MessageSquare },
+  { name: "Projects", href: "/admin/projects", icon: FolderOpen },
 ];
 
 export default function AdminSidebar() {
